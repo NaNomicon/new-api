@@ -9,13 +9,11 @@ import (
 	"github.com/QuantumNous/new-api/common"
 )
 
-
 type ModelAliasTarget struct {
 	Model    string `json:"model"`
 	Priority int    `json:"priority"`
 	Weight   int    `json:"weight"`
 }
-
 
 type ModelAlias struct {
 	Alias   string             `json:"alias"`
@@ -32,7 +30,6 @@ func init() {
 	modelAliasMap = make(map[string]*ModelAlias)
 }
 
-
 func UpdateModelAliasesByJSONString(jsonString string) error {
 	var aliases []ModelAlias
 	if err := common.Unmarshal([]byte(jsonString), &aliases); err != nil {
@@ -48,33 +45,30 @@ func UpdateModelAliasesByJSONString(jsonString string) error {
 	return nil
 }
 
-
 func ModelAliases2JSONString() string {
 	modelAliasMu.RLock()
 	defer modelAliasMu.RUnlock()
-	jsonBytes, err := common.Marshal(modelAliases)
-	if err != nil {
+	if modelAliases == nil {
 		return "[]"
 	}
-	return string(jsonBytes)
+	s, _ := common.Marshal(modelAliases)
+	return string(s)
 }
-
 
 func GetModelAliases() []ModelAlias {
 	modelAliasMu.RLock()
 	defer modelAliasMu.RUnlock()
-	result := make([]ModelAlias, len(modelAliases))
-	copy(result, modelAliases)
-	return result
+	cp := make([]ModelAlias, len(modelAliases))
+	copy(cp, modelAliases)
+	return cp
 }
-
 
 func GetModelAlias(aliasName string) *ModelAlias {
 	modelAliasMu.RLock()
 	defer modelAliasMu.RUnlock()
-	return modelAliasMap[aliasName]
+	a := modelAliasMap[aliasName]
+	return a
 }
-
 
 func IsModelAlias(modelName string) bool {
 	modelAliasMu.RLock()
@@ -83,64 +77,52 @@ func IsModelAlias(modelName string) bool {
 	return ok
 }
 
-// ResolveAlias picks an upstream model for aliasName, excluding any model
-// already present in failedModels. It selects from the lowest-numbered
-// priority tier first; within a tier it uses weighted random sampling.
-// Returns "" when no eligible targets remain.
+// ResolveAlias picks an upstream model for aliasName, excluding any models in
+// failedModels. It selects within the lowest available priority tier using
+// weighted-random sampling. Returns "" when all targets are exhausted or
+// aliasName is not a registered alias.
 func ResolveAlias(aliasName string, failedModels map[string]bool) string {
 	modelAliasMu.RLock()
-	alias := modelAliasMap[aliasName]
+	alias, ok := modelAliasMap[aliasName]
 	modelAliasMu.RUnlock()
-
-	if alias == nil || len(alias.Targets) == 0 {
+	if !ok {
 		return ""
 	}
 
-	var available []ModelAliasTarget
+
+	byPriority := make(map[int][]ModelAliasTarget)
 	for _, t := range alias.Targets {
 		if !failedModels[t.Model] {
-			available = append(available, t)
+			byPriority[t.Priority] = append(byPriority[t.Priority], t)
 		}
 	}
-	if len(available) == 0 {
+	if len(byPriority) == 0 {
 		return ""
 	}
 
-	sort.Slice(available, func(i, j int) bool {
-		return available[i].Priority < available[j].Priority
-	})
 
-	topPriority := available[0].Priority
-	var tier []ModelAliasTarget
-	for _, t := range available {
-		if t.Priority == topPriority {
-			tier = append(tier, t)
-		} else {
-			break
-		}
+	tiers := make([]int, 0, len(byPriority))
+	for p := range byPriority {
+		tiers = append(tiers, p)
 	}
+	sort.Ints(tiers)
 
-	return weightedRandomPick(tier)
+	return weightedRandomPick(byPriority[tiers[0]])
 }
 
 func weightedRandomPick(tier []ModelAliasTarget) string {
-	if len(tier) == 0 {
-		return ""
-	}
 	if len(tier) == 1 {
 		return tier[0].Model
 	}
-
-	totalWeight := 0
-	for _, t := range tier {
-		w := t.Weight
+	total := 0
+	for i := range tier {
+		w := tier[i].Weight
 		if w <= 0 {
 			w = 1
 		}
-		totalWeight += w
+		total += w
 	}
-
-	r := rand.Intn(totalWeight)
+	r := rand.Intn(total)
 	for _, t := range tier {
 		w := t.Weight
 		if w <= 0 {
@@ -156,48 +138,31 @@ func weightedRandomPick(tier []ModelAliasTarget) string {
 
 // rebuildAliasMapLocked must be called with modelAliasMu held.
 func rebuildAliasMapLocked() {
-	modelAliasMap = make(map[string]*ModelAlias, len(modelAliases))
+	m := make(map[string]*ModelAlias, len(modelAliases))
 	for i := range modelAliases {
-		modelAliasMap[modelAliases[i].Alias] = &modelAliases[i]
+		m[modelAliases[i].Alias] = &modelAliases[i]
 	}
+	modelAliasMap = m
 }
 
 func validateModelAliases(aliases []ModelAlias) error {
-	seen := make(map[string]bool)
+	seen := make(map[string]bool, len(aliases))
 	for _, a := range aliases {
 		if a.Alias == "" {
-			return fmt.Errorf("model alias name cannot be empty")
+			return fmt.Errorf("alias name must not be empty")
 		}
 		if seen[a.Alias] {
-			return fmt.Errorf("duplicate model alias: %s", a.Alias)
+			return fmt.Errorf("duplicate alias %q", a.Alias)
 		}
 		seen[a.Alias] = true
-		if len(a.Targets) == 0 {
-			return fmt.Errorf("model alias %q has no targets", a.Alias)
-		}
-		targetModels := make(map[string]bool)
+	}
+	for _, a := range aliases {
 		for _, t := range a.Targets {
-			if t.Model == "" {
-				return fmt.Errorf("model alias %q has a target with empty model name", a.Alias)
-			}
 			if t.Model == a.Alias {
-				return fmt.Errorf("model alias %q has a self-referencing target", a.Alias)
+				return fmt.Errorf("alias %q cannot reference itself as a target", a.Alias)
 			}
-			if targetModels[t.Model] {
-				return fmt.Errorf("model alias %q has duplicate target model: %s", a.Alias, t.Model)
-			}
-			targetModels[t.Model] = true
-		}
-	}
-
-	aliasNames := make(map[string]bool, len(aliases))
-	for _, a := range aliases {
-		aliasNames[a.Alias] = true
-	}
-	for _, a := range aliases {
-		for _, t := range a.Targets {
-			if aliasNames[t.Model] {
-				return fmt.Errorf("model alias %q targets another alias %q (cyclic references not allowed)", a.Alias, t.Model)
+			if seen[t.Model] {
+				return fmt.Errorf("alias %q: target %q is itself an alias; chaining aliases is not allowed", a.Alias, t.Model)
 			}
 		}
 	}

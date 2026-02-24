@@ -202,8 +202,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				break
 			}
 			relayInfo.OriginModelName = resolvedModel
+			logger.LogInfo(c, fmt.Sprintf("alias %q resolved to model %q", originModelName, resolvedModel))
 		}
-	retryParam := &service.RetryParam{
+		retryParam := &service.RetryParam{
 			Ctx:        c,
 			TokenGroup: relayInfo.TokenGroup,
 			ModelName:  relayInfo.OriginModelName,
@@ -211,7 +212,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 
 		currentModelExhausted := false
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+		for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 			channel, channelErr := getChannel(c, relayInfo, retryParam)
 			if channelErr != nil {
 				logger.LogError(c, channelErr.Error())
@@ -221,8 +222,9 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				}
 				break
 			}
-		addUsedChannel(c, channel.Id)
+			addUsedChannel(c, channel.Id)
 			bodyStorage, bodyErr := common.GetBodyStorage(c)
+			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
 			if bodyErr != nil {
 				if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
 					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
@@ -231,7 +233,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 				}
 				break
 			}
-		c.Request.Body = io.NopCloser(bodyStorage)
+			c.Request.Body = io.NopCloser(bodyStorage)
 			switch relayFormat {
 			case types.RelayFormatOpenAIRealtime:
 				newAPIError = relay.WssHelper(c, relayInfo)
@@ -242,14 +244,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			default:
 				newAPIError = relayHandler(c, relayInfo)
 			}
-		if newAPIError == nil {
+			if newAPIError == nil {
 				return
 			}
 
 			newAPIError = service.NormalizeViolationFeeError(newAPIError)
 
 			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+			if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 				break
 			}
 		}
@@ -260,6 +262,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		// Mark the exhausted model and try the next alias target.
 		aliasFailedModels[relayInfo.OriginModelName] = true
 	}
+	// Restore original alias name so post-loop code sees the user-requested model.
+	relayInfo.OriginModelName = originModelName
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))

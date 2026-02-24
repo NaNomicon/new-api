@@ -1,7 +1,10 @@
 package controller
 
+import (
 	"encoding/json"
 	"net/http"
+
+	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
 )
@@ -60,7 +63,7 @@ func AddModelAlias(c *gin.Context) {
 func DeleteModelAlias(c *gin.Context) {
 	aliasName := c.Param("alias")
 	aliases := setting.GetModelAliases()
-	updated := aliases[:0]
+	var updated []setting.ModelAlias
 	found := false
 	for _, a := range aliases {
 		if a.Alias == aliasName {
