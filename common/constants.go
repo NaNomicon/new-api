@@ -110,6 +110,9 @@ var QuotaRemindThreshold = 1000
 var PreConsumedQuota = 500
 
 var RetryTimes = 0
+// AliasRetryLimit caps the number of alias-target resolution attempts in the
+// relay outer loop. Each attempt may trigger up to RetryTimes channel retries,
+// so worst-case total channel selections = AliasRetryLimit * RetryTimes.
 var AliasRetryLimit = 10
 
 //var RootUserEmail = ""

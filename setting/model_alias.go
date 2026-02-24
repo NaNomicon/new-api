@@ -83,13 +83,11 @@ func IsModelAlias(modelName string) bool {
 // aliasName is not a registered alias.
 func ResolveAlias(aliasName string, failedModels map[string]bool) string {
 	modelAliasMu.RLock()
+	defer modelAliasMu.RUnlock()
 	alias, ok := modelAliasMap[aliasName]
-	modelAliasMu.RUnlock()
 	if !ok {
 		return ""
 	}
-
-
 	byPriority := make(map[int][]ModelAliasTarget)
 	for _, t := range alias.Targets {
 		if !failedModels[t.Model] {
@@ -99,7 +97,6 @@ func ResolveAlias(aliasName string, failedModels map[string]bool) string {
 	if len(byPriority) == 0 {
 		return ""
 	}
-
 
 	tiers := make([]int, 0, len(byPriority))
 	for p := range byPriority {

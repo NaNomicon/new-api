@@ -1,9 +1,9 @@
 package controller
 
 import (
-	"encoding/json"
 	"net/http"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/gin-gonic/gin"
@@ -31,6 +31,10 @@ func UpdateModelAliases(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	if err := setting.UpdateModelAliasesByJSONString(jsonStr); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 
@@ -54,6 +58,10 @@ func AddModelAlias(c *gin.Context) {
 		return
 	}
 	if err := model.UpdateOption("ModelAliases", jsonStr); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
+	if err := setting.UpdateModelAliasesByJSONString(jsonStr); err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
 		return
 	}
@@ -85,6 +93,10 @@ func DeleteModelAlias(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
 		return
 	}
+	if err := setting.UpdateModelAliasesByJSONString(jsonStr); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"success": false, "message": err.Error()})
+		return
+	}
 	c.JSON(http.StatusOK, gin.H{"success": true, "message": ""})
 }
 
@@ -92,7 +104,7 @@ func marshalModelAliases(aliases []setting.ModelAlias) (string, error) {
 	if aliases == nil {
 		aliases = []setting.ModelAlias{}
 	}
-	bytes, err := json.Marshal(aliases)
+	bytes, err := common.Marshal(aliases)
 	if err != nil {
 		return "", err
 	}
