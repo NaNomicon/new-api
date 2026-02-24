@@ -176,58 +176,90 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		}
 	}()
 
-	retryParam := &service.RetryParam{
-		Ctx:        c,
-		TokenGroup: relayInfo.TokenGroup,
-		ModelName:  relayInfo.OriginModelName,
-		Retry:      common.GetPointer(0),
+	originModelName := relayInfo.OriginModelName
+	isAlias := setting.IsModelAlias(originModelName)
+
+	// aliasFailedModels tracks upstream models whose channels are all exhausted.
+	// Only used when the requested model is a registered alias.
+	aliasFailedModels := make(map[string]bool)
+
+	// aliasRetryLimit caps the number of alias-level target switches.
+	// In the non-alias path the outer loop runs exactly once.
+	aliasRetryLimit := 1
+	if isAlias {
+		aliasRetryLimit = common.AliasRetryLimit
 	}
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
-		channel, channelErr := getChannel(c, relayInfo, retryParam)
-		if channelErr != nil {
-			logger.LogError(c, channelErr.Error())
-			newAPIError = channelErr
-			break
-		}
-
-		addUsedChannel(c, channel.Id)
-		bodyStorage, bodyErr := common.GetBodyStorage(c)
-		if bodyErr != nil {
-			// Ensure consistent 413 for oversized bodies even when error occurs later (e.g., retry path)
-			if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
-			} else {
-				newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+	for aliasAttempt := 0; aliasAttempt < aliasRetryLimit; aliasAttempt++ {
+		if isAlias {
+			resolvedModel := setting.ResolveAlias(originModelName, aliasFailedModels)
+			if resolvedModel == "" {
+				newAPIError = types.NewError(
+					fmt.Errorf("model alias %q: all targets exhausted", originModelName),
+					types.ErrorCodeGetChannelFailed,
+					types.ErrOptionWithSkipRetry(),
+				)
+				break
 			}
-			break
+			relayInfo.OriginModelName = resolvedModel
 		}
+	retryParam := &service.RetryParam{
+			Ctx:        c,
+			TokenGroup: relayInfo.TokenGroup,
+			ModelName:  relayInfo.OriginModelName,
+			Retry:      common.GetPointer(0),
+		}
+
+		currentModelExhausted := false
+	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+			channel, channelErr := getChannel(c, relayInfo, retryParam)
+			if channelErr != nil {
+				logger.LogError(c, channelErr.Error())
+				newAPIError = channelErr
+				if isAlias && types.IsSkipRetryError(channelErr) {
+					currentModelExhausted = true
+				}
+				break
+			}
+		addUsedChannel(c, channel.Id)
+			bodyStorage, bodyErr := common.GetBodyStorage(c)
+			if bodyErr != nil {
+				if common.IsRequestBodyTooLargeError(bodyErr) || errors.Is(bodyErr, common.ErrRequestBodyTooLarge) {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusRequestEntityTooLarge, types.ErrOptionWithSkipRetry())
+				} else {
+					newAPIError = types.NewErrorWithStatusCode(bodyErr, types.ErrorCodeReadRequestBodyFailed, http.StatusBadRequest, types.ErrOptionWithSkipRetry())
+				}
+				break
+			}
 		c.Request.Body = io.NopCloser(bodyStorage)
-
-		switch relayFormat {
-		case types.RelayFormatOpenAIRealtime:
-			newAPIError = relay.WssHelper(c, relayInfo)
-		case types.RelayFormatClaude:
-			newAPIError = relay.ClaudeHelper(c, relayInfo)
-		case types.RelayFormatGemini:
-			newAPIError = geminiRelayHandler(c, relayInfo)
-		default:
-			newAPIError = relayHandler(c, relayInfo)
-		}
-
+			switch relayFormat {
+			case types.RelayFormatOpenAIRealtime:
+				newAPIError = relay.WssHelper(c, relayInfo)
+			case types.RelayFormatClaude:
+				newAPIError = relay.ClaudeHelper(c, relayInfo)
+			case types.RelayFormatGemini:
+				newAPIError = geminiRelayHandler(c, relayInfo)
+			default:
+				newAPIError = relayHandler(c, relayInfo)
+			}
 		if newAPIError == nil {
-			return
+				return
+			}
+
+			newAPIError = service.NormalizeViolationFeeError(newAPIError)
+
+			processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+				break
+			}
 		}
 
-		newAPIError = service.NormalizeViolationFeeError(newAPIError)
-
-		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
-
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !isAlias || !currentModelExhausted {
 			break
 		}
+		// Mark the exhausted model and try the next alias target.
+		aliasFailedModels[relayInfo.OriginModelName] = true
 	}
-
 	useChannel := c.GetStringSlice("use_channel")
 	if len(useChannel) > 1 {
 		retryLogStr := fmt.Sprintf("重试：%s", strings.Trim(strings.Join(strings.Fields(fmt.Sprint(useChannel)), "->"), "[]"))

@@ -92,6 +92,7 @@ func InitOptionMap() {
 	common.OptionMap["TopupGroupRatio"] = common.TopupGroupRatio2JSONString()
 	common.OptionMap["Chats"] = setting.Chats2JsonString()
 	common.OptionMap["AutoGroups"] = setting.AutoGroups2JsonString()
+	common.OptionMap["ModelAliases"] = setting.ModelAliases2JSONString()
 	common.OptionMap["DefaultUseAutoGroup"] = strconv.FormatBool(setting.DefaultUseAutoGroup)
 	common.OptionMap["PayMethods"] = operation_setting.PayMethods2JsonString()
 	common.OptionMap["GitHubClientId"] = ""
@@ -326,6 +327,8 @@ func updateOptionMap(key string, value string) (err error) {
 		err = setting.UpdateChatsByJsonString(value)
 	case "AutoGroups":
 		err = setting.UpdateAutoGroupsByJsonString(value)
+	case "ModelAliases":
+		err = setting.UpdateModelAliasesByJSONString(value)
 	case "CustomCallbackAddress":
 		operation_setting.CustomCallbackAddress = value
 	case "EpayId":
